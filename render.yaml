@@ -1,0 +1,38 @@
+services:
+  - type: pserv
+    name: idshield-ocr
+    runtime: docker
+    region: oregon
+    plan: 1c-2g
+    dockerfilePath: ./backend/python/Dockerfile
+    dockerContext: ./backend/python
+    envVars:
+      - key: FASTAPI_AUTH_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+
+  - type: web
+    name: idshield-api
+    runtime: node
+    region: oregon
+    plan: 1c-2g
+    rootDir: backend
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: FRONTEND_ORIGINS
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: identity-documents
+      - key: FASTAPI_SERVICE_URL
+        value: http://idshield-ocr:8000
+      - key: FASTAPI_AUTH_TOKEN
+        sync: false
