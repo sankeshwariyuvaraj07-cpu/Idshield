@@ -7,6 +7,11 @@
     "dev:backend": "npm --prefix backend run dev",
     "build": "npm --prefix frontend ci && npm --prefix frontend run build",
     "lint": "npm --prefix frontend run lint",
+    "test": "npm --prefix frontend test",
+    "test:all": "npm test && npm --prefix backend test",
     "preview": "npm --prefix frontend run preview"
+  },
+  "dependencies": {
+    "@supabase/server": "^1.9.2"
   }
 }

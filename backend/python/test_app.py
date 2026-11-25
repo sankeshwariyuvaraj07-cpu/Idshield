@@ -1,6 +1,6 @@
 import unittest
 
-from app import classify_qr_payload, extract_document_metadata
+from app import classify_qr_payload, extract_document_metadata, parse_ocr_languages
 
 
 class DocumentMetadataTests(unittest.TestCase):
@@ -30,6 +30,16 @@ class DocumentMetadataTests(unittest.TestCase):
         self.assertEqual(result["status"], "insecure_http")
         self.assertFalse(result["payloadReturned"])
         self.assertNotIn("example.test", str(result))
+
+    def test_ocr_languages_accept_supported_tesseract_language_codes(self):
+        self.assertEqual(parse_ocr_languages("eng+hin+kan"), "eng+hin+kan")
+        self.assertEqual(parse_ocr_languages("kan"), "kan")
+
+    def test_ocr_languages_reject_unknown_and_duplicate_codes(self):
+        with self.assertRaises(ValueError):
+            parse_ocr_languages("eng+fra")
+        with self.assertRaises(ValueError):
+            parse_ocr_languages("hin+hin")
 
     def test_qr_https_destination_remains_unverified_without_returning_payload(self):
         result = classify_qr_payload("https://example.test/verify")

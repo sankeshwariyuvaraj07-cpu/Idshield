@@ -51,6 +51,21 @@ test('sensitive identifiers are never included in the PDF safety report', async 
   assert.doesNotMatch(pdf, /ABCDE1234F/)
 })
 
+test('PDF report explicitly separates QR classification from cryptographic signature verification', async () => {
+  const report = {
+    name: 'review.pdf',
+    analyzedAt: '2026-01-01T00:00:00.000Z',
+    remote: true,
+    qrSafety: { status: 'unverified_url' },
+    digitalSignature: { status: 'signature_present_unverified' },
+  }
+  const pdf = await createSafetyReportPdf(report, createSafetyReport(report)).text()
+
+  assert.match(pdf, /QR destination check: unverified_url/)
+  assert.match(pdf, /QR digital signature verification: unavailable/)
+  assert.match(pdf, /PDF signature structure: marker detected; cryptographic verification unavailable/)
+})
+
 test('AI explanation responses must include a concise explanation for every category', () => {
   const valid = JSON.stringify({
     explanations: Object.fromEntries(safetyReportCategories.map((category) => [category, 'Review this indicator with the original document.'])),

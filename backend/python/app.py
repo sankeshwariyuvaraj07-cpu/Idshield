@@ -14,6 +14,19 @@ MAX_FILE_SIZE = 8 * 1024 * 1024
 MAX_IMAGE_PIXELS = 25_000_000
 INFERENCE_API_TOKEN = os.getenv("FASTAPI_AUTH_TOKEN") or os.getenv("INFERENCE_API_TOKEN", "")
 TESSERACT_CMD = os.getenv("TESSERACT_CMD")
+SUPPORTED_OCR_LANGUAGES = {"eng", "hin", "kan"}
+
+
+def parse_ocr_languages(value):
+    languages = value.split("+")
+    if not languages or any(language not in SUPPORTED_OCR_LANGUAGES for language in languages):
+        raise ValueError("TESSERACT_LANGUAGES must contain eng, hin, and/or kan.")
+    if len(set(languages)) != len(languages):
+        raise ValueError("TESSERACT_LANGUAGES cannot contain duplicate language codes.")
+    return "+".join(languages)
+
+
+OCR_LANGUAGES = parse_ocr_languages(os.getenv("TESSERACT_LANGUAGES", "eng"))
 if TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
@@ -175,6 +188,7 @@ async def scan_transit_document(
         data = pytesseract.image_to_data(
             cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX),
             output_type=pytesseract.Output.DICT,
+            lang=OCR_LANGUAGES,
             timeout=20,
         )
         confidences = []
@@ -189,6 +203,8 @@ async def scan_transit_document(
         confidence = round(sum(confidences) / len(confidences) / 100, 4) if confidences else None
         ocr_status = "complete"
     except pytesseract.TesseractNotFoundError:
+        ocr_status = "unavailable"
+    except pytesseract.TesseractError:
         ocr_status = "unavailable"
     except RuntimeError:
         ocr_status = "timed_out"
@@ -210,6 +226,7 @@ async def scan_transit_document(
             "status": ocr_status,
             "wordCount": word_count,
             "confidence": confidence,
+            "languages": OCR_LANGUAGES.split("+"),
             "textReturned": False,
         },
         "documentIntegrity": "inconclusive",
@@ -242,10 +259,16 @@ async def extract_text(
         data = pytesseract.image_to_data(
             normalized,
             output_type=pytesseract.Output.DICT,
+            lang=OCR_LANGUAGES,
             timeout=20,
         )
     except pytesseract.TesseractNotFoundError:
         raise HTTPException(status_code=503, detail="Tesseract OCR is not installed on this service.")
+    except pytesseract.TesseractError as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Tesseract language data for the configured OCR languages is not installed.",
+        ) from error
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail="OCR processing exceeded its time limit.") from error
 
@@ -270,6 +293,7 @@ async def extract_text(
         "text": text,
         "wordCount": len(words),
         "confidence": round(sum(confidences) / len(confidences) / 100, 4) if confidences else None,
+        "languages": OCR_LANGUAGES.split("+"),
         "screening": {
             "finalStatus": "MANUAL_REVIEW_REQUIRED",
             "qrSafety": qr_safety,

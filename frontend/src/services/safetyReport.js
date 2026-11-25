@@ -47,7 +47,7 @@ function parseExpiry(text) {
 export function createSafetyReport(report) {
   const screening = report.screening || {}
   const visualForensics = screening.visualForensics || {}
-  const qrSafety = screening.qrSafety || {}
+  const qrSafety = screening.qrSafety || report.qrSafety || {}
   const duplicateCheck = report.duplicateCheck || {}
   const ocrText = report.ocrText || ''
   const hasSensitiveIdentifier =
@@ -263,6 +263,8 @@ function wrapLine(value, width = 88) {
 }
 
 export function createSafetyReportPdf(report, safetyReport) {
+  const qrStatus = report.qrSafety?.status || report.screening?.qrSafety?.status || 'not_checked'
+  const signatureStatus = report.digitalSignature?.status
   const lines = [
     'IDShield AI - Safety and Risk Assessment',
     `File: ${report.name}`,
@@ -271,6 +273,9 @@ export function createSafetyReportPdf(report, safetyReport) {
     `SHA-256: ${report.hash || 'Unavailable'}`,
     `Overall status: ${safetyReport.status}`,
     `Overall risk level: ${safetyReport.riskLevel}`,
+    `QR destination check: ${qrStatus}; destination and issuer remain unverified.`,
+    'QR digital signature verification: unavailable; no trusted issuer key configured.',
+    `PDF signature structure: ${signatureStatus === 'signature_present_unverified' ? 'marker detected; cryptographic verification unavailable' : signatureStatus === 'not_detected' ? 'no marker detected; cryptographic verification unavailable' : signatureStatus === 'not_applicable' ? 'not applicable to an image file' : 'not verified'}`,
     ...wrapLine(safetyReport.explanation),
     '',
     ...safetyReport.findings.flatMap((item) => [

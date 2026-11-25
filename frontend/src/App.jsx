@@ -6,7 +6,12 @@ import {
   downloadSafetyReportPdf,
   parseSafetyExplanations,
 } from './services/safetyReport'
+import { formatDashboardDate, summarizeDashboardRecords } from './services/dashboardAnalytics'
+import { inspectPdfSignature } from './services/pdfSignature'
+import { summarizeQrDestinations } from './services/qrSafety'
+import { resolveScanVoiceCommand } from './services/scanCommands'
 import { googleAuthEnabled, supabase, supabaseConfigured } from './services/supabase'
+import TransitView from './TransitView'
 import './App.css'
 
 const iconPaths = {
@@ -33,9 +38,11 @@ const iconPaths = {
   plus: <><path d="M12 5v14M5 12h14" /></>,
   refresh: <><path d="M20 7v5h-5M4 17v-5h5" /><path d="M5.6 9a7 7 0 0 1 11.6-2L20 12M4 12l2.8 5a7 7 0 0 0 11.6-2" /></>,
   mic: <><rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10v2a7 7 0 0 0 14 0v-2m-7 9v3m-4 0h8" /></>,
+  camera: <><path d="M14 5 12 3H8L6 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2l-2-2h-2" /><circle cx="12" cy="12" r="3.5" /></>,
   volume: <><path d="M11 5 6 9H3v6h3l5 4V5ZM15.5 8.5a5 5 0 0 1 0 7m3-10a9 9 0 0 1 0 13" /></>,
   help: <><circle cx="12" cy="12" r="10" /><path d="M9.6 9a2.5 2.5 0 1 1 4.3 1.8c-1.1 1.1-1.9 1.5-1.9 3m0 3h.01" /></>,
   close: <><path d="m18 6-12 12M6 6l12 12" /></>,
+  bus: <><rect x="5" y="3" width="14" height="15" rx="3" /><path d="M5 10h14M8 18v2m8-2v2M8 13h1m6 0h1" /><circle cx="8" cy="21" r="1" /><circle cx="16" cy="21" r="1" /></>,
 }
 
 function Icon({ name, size = 18 }) {
@@ -46,18 +53,14 @@ const navItems = [
   ['home', 'Home', 'shield'],
   ['screen', 'Screening', 'scan'],
   ['dashboard', 'Institution', 'building'],
+  ['transit', 'Transit', 'bus'],
 ]
 
-const stages = [
-  'Signature validation',
-  'Normalisation',
-  'OCR extraction',
-  'Error-level analysis',
-  'Copy-move detection',
-  'Typography audit',
-  'Integrity fingerprint',
-  'Registry cross-check',
-  'Explainable report',
+const informationNavItems = [
+  ['assistant', 'AI assistant', 'bot'],
+  ['research', 'Research notes', 'help'],
+  ['about', 'About IDShield', 'target'],
+  ['contact', 'Contact', 'users'],
 ]
 
 function Brand({ onClick }) {
@@ -95,10 +98,10 @@ function HomeView({ navigate }) {
           <div className="pill"><span className="pulse" /> Evidence-led document screening</div>
           <h1>Review documents with <span className="gradient-text">clear, bounded signals.</span></h1>
           <p className="lead">Run the checks that are configured, review evidence across 12 safety categories, and see what still needs human verification. IDShield does not make identity or eligibility decisions.</p>
-          <div className="hero-actions"><Button variant="primary" size="large" onClick={() => navigate('screen')}><Icon name="upload" /> Screen a document</Button><Button size="large" onClick={() => navigate('auth')}>Sign in</Button></div>
+          <div className="hero-actions"><Button variant="primary" size="large" onClick={() => navigate('screen')}><Icon name="upload" /> Screen a document</Button><Button size="large" onClick={() => navigate('assistant')}><Icon name="bot" /> Ask the assistant</Button></div>
           <div className="chips"><span className="chip">OCR on supported images</span><span className="chip">SHA-256 integrity</span><span className="chip">Evidence-first reports</span></div>
         </div>
-        <div className="hero-visual" aria-hidden="true"><div className="scanner"><div className="scanner-ring ring-one" /><div className="scanner-ring ring-two" /><div className="scanner-ring ring-three" /><div className="orbit" /><div className="document-card"><span className="doc-photo" /><i /><i /><i /><i /><i /><div className="doc-scanline" /></div><div className="scan-badge"><Icon name="shield" size={29} /></div><div className="float-chip"><span className="pulse" /> Integrity checked</div></div></div>
+        <div className="hero-visual" aria-hidden="true"><div className="scanner"><div className="scanner-ring ring-one" /><div className="scanner-ring ring-two" /><div className="scanner-ring ring-three" /><div className="orbit" /><div className="document-card"><span className="doc-photo" /><i /><i /><i /><i /><i /><div className="doc-scanline" /></div><div className="scan-badge"><Icon name="shield" size={29} /></div><div className="float-chip"><span className="pulse" /> Evidence-first review</div></div></div>
       </motion.section>
 
       <motion.section className="stats" {...revealProps}>
@@ -128,6 +131,7 @@ function FileChip({ file, onRemove }) {
 function ScreeningView({ navigate, onComplete, onToast, session }) {
   const [file, setFile] = useState(null)
   const [demoSample, setDemoSample] = useState(false)
+  const [consentAccepted, setConsentAccepted] = useState(false)
   const [docType, setDocType] = useState('Identity document')
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState(0)
@@ -135,7 +139,21 @@ function ScreeningView({ navigate, onComplete, onToast, session }) {
   const [error, setError] = useState('')
   const [cloudDocumentId, setCloudDocumentId] = useState('')
   const [deletingUpload, setDeletingUpload] = useState(false)
+  const [cameraStream, setCameraStream] = useState(null)
+  const [cameraMode, setCameraMode] = useState('document')
+  const [cameraError, setCameraError] = useState('')
+  const [voiceScanning, setVoiceScanning] = useState(false)
+  const [voiceScanNotice, setVoiceScanNotice] = useState('')
+  const [portraitPreviewUrl, setPortraitPreviewUrl] = useState('')
+  const [selfiePreviewUrl, setSelfiePreviewUrl] = useState('')
+  const [faceConsent, setFaceConsent] = useState(false)
+  const [qrSafety, setQrSafety] = useState(null)
+  const [digitalSignature, setDigitalSignature] = useState(null)
   const inputRef = useRef(null)
+  const portraitInputRef = useRef(null)
+  const videoRef = useRef(null)
+  const cameraStreamRef = useRef(null)
+  const recognitionRef = useRef(null)
   const scanId = useRef(0)
 
   const selectFile = async (candidate) => {
@@ -152,6 +170,8 @@ function ScreeningView({ navigate, onComplete, onToast, session }) {
       setError('Choose a PNG, JPG, WEBP, or PDF file.')
       return
     }
+    setQrSafety(null)
+    setDigitalSignature(null)
     if (candidate.type !== 'application/pdf') {
       const signature = new Uint8Array(await candidate.slice(0, 12).arrayBuffer())
       const isPng = signature[0] === 0x89 && signature[1] === 0x50 && signature[2] === 0x4e && signature[3] === 0x47
@@ -167,9 +187,187 @@ function ScreeningView({ navigate, onComplete, onToast, session }) {
         setError('The file does not have a valid PDF signature.')
         return
       }
+      setDigitalSignature(inspectPdfSignature(await candidate.arrayBuffer()))
     }
+    if (candidate.type !== 'application/pdf') setDigitalSignature({ status: 'not_applicable', cryptographicVerification: 'unavailable' })
     setFile(candidate)
     setDemoSample(false)
+    setConsentAccepted(false)
+    if (candidate.type.startsWith('image/')) {
+      try {
+        const detection = new window.BarcodeDetector({ formats: ['qr_code'] })
+        const image = await createImageBitmap(candidate)
+        const codes = await detection.detect(image)
+        image.close()
+        setQrSafety(summarizeQrDestinations(codes.map(({ rawValue }) => rawValue)))
+      } catch {
+        setQrSafety({ status: 'unavailable', payloadReturned: false, signatureVerification: 'unavailable' })
+      }
+    } else {
+      setQrSafety(null)
+    }
+  }
+
+  const stopCamera = () => {
+    cameraStreamRef.current?.getTracks().forEach((track) => track.stop())
+    cameraStreamRef.current = null
+    if (videoRef.current) videoRef.current.srcObject = null
+    setCameraStream(null)
+  }
+
+  const openCamera = async (mode = 'document') => {
+    setCameraError('')
+    if (mode === 'face' && !faceConsent) {
+      setCameraError('Confirm local-only photo comparison consent before opening the face camera.')
+      return
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError('Camera access needs a supported browser and a secure page (HTTPS or localhost).')
+      return
+    }
+    stopCamera()
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: mode === 'face' ? 'user' : 'environment' },
+        audio: false,
+      })
+      cameraStreamRef.current = stream
+      setCameraMode(mode)
+      setCameraStream(stream)
+    } catch (cameraRequestError) {
+      setCameraError(`Unable to open the camera: ${cameraRequestError.message}`)
+    }
+  }
+
+  useEffect(() => {
+    if (videoRef.current && cameraStream) {
+      videoRef.current.srcObject = cameraStream
+      void videoRef.current.play().catch((playError) => {
+        setCameraError(`Unable to start the camera preview: ${playError.message}`)
+      })
+    }
+  }, [cameraStream])
+
+  useEffect(() => () => {
+    cameraStreamRef.current?.getTracks().forEach((track) => track.stop())
+    cameraStreamRef.current = null
+  }, [])
+
+  useEffect(() => () => {
+    recognitionRef.current?.abort?.()
+    recognitionRef.current = null
+  }, [])
+
+  useEffect(() => () => {
+    if (portraitPreviewUrl) URL.revokeObjectURL(portraitPreviewUrl)
+  }, [portraitPreviewUrl])
+
+  useEffect(() => () => {
+    if (selfiePreviewUrl) URL.revokeObjectURL(selfiePreviewUrl)
+  }, [selfiePreviewUrl])
+
+  const captureCameraFrame = async () => {
+    const video = videoRef.current
+    if (!video?.videoWidth || !video?.videoHeight) {
+      setCameraError('Wait for the camera preview to become ready, then try again.')
+      return
+    }
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    const context = canvas.getContext('2d')
+    if (!context) {
+      setCameraError('This browser could not prepare the camera image.')
+      return
+    }
+    context.drawImage(video, 0, 0)
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.9))
+    if (!blob) {
+      setCameraError('Unable to capture an image from the camera.')
+      return
+    }
+    if (cameraMode === 'face') {
+      if (!faceConsent) {
+        setCameraError('Confirm local-only photo comparison consent before capturing a reference photo.')
+        return
+      }
+      const capturedSelfie = new File([blob], 'local-face-comparison.jpg', { type: 'image/jpeg' })
+      setSelfiePreviewUrl(URL.createObjectURL(capturedSelfie))
+      setFaceConsent(false)
+      setCameraError('')
+      setVoiceScanNotice('Reference photo captured in this browser only; automated face matching is not configured.')
+      return
+    }
+    await selectFile(new File([blob], 'camera-document.jpg', { type: 'image/jpeg' }))
+    setCameraError('')
+    stopCamera()
+  }
+
+  const captureFacePhoto = () => {
+    if (!faceConsent) {
+      setCameraError('Confirm local-only photo comparison consent before opening the face camera.')
+      return
+    }
+    if (cameraStream && cameraMode === 'face') {
+      void captureCameraFrame()
+      return
+    }
+    void openCamera('face')
+  }
+
+  const selectPortraitPhoto = async (candidate) => {
+    if (!candidate) return
+    if (!faceConsent) {
+      setCameraError('Confirm local-only photo comparison consent before selecting a portrait.')
+      return
+    }
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(candidate.type) || candidate.size > 5 * 1024 * 1024) {
+      setCameraError('Choose a PNG, JPG, or WEBP portrait image up to 5 MB.')
+      return
+    }
+    if (portraitPreviewUrl) URL.revokeObjectURL(portraitPreviewUrl)
+    setPortraitPreviewUrl(URL.createObjectURL(candidate))
+    setFaceConsent(false)
+    setCameraError('')
+  }
+
+  const startVoiceScan = () => {
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!Recognition) {
+      setVoiceScanNotice('Voice commands are not supported in this browser. Use the camera buttons instead.')
+      return
+    }
+    if (recognitionRef.current) recognitionRef.current.stop()
+    const recognition = new Recognition()
+    recognition.lang = 'en-IN'
+    recognition.continuous = false
+    recognition.interimResults = false
+    recognition.onresult = (event) => {
+      const transcript = event.results?.[0]?.[0]?.transcript || ''
+      const command = resolveScanVoiceCommand(transcript)
+      if (command === 'open_camera') void openCamera('document')
+      else if (command === 'open_face_camera') captureFacePhoto()
+      else if (command === 'capture_document' || command === 'capture_face') void captureCameraFrame()
+      else if (command === 'stop_camera') stopCamera()
+      else setVoiceScanNotice(`Didn't recognize a camera command for "${transcript}". Try “open camera” or “capture document”.`)
+    }
+    recognition.onerror = (event) => {
+      setVoiceScanNotice(`Voice command failed (${event.error}). Use the camera controls or check microphone permission.`)
+    }
+    recognition.onend = () => {
+      setVoiceScanning(false)
+      recognitionRef.current = null
+    }
+    recognitionRef.current = recognition
+    setVoiceScanning(true)
+    setVoiceScanNotice('Listening for a camera command. Browser speech recognition may process audio outside IDShield.')
+    try {
+      recognition.start()
+    } catch (recognitionError) {
+      setVoiceScanning(false)
+      recognitionRef.current = null
+      setVoiceScanNotice(`Unable to start voice commands: ${recognitionError.message}`)
+    }
   }
 
   const useDemo = async () => {
@@ -225,13 +423,21 @@ function ScreeningView({ navigate, onComplete, onToast, session }) {
     }
     setFile(new File([blob], 'IDShield-synthetic-demo.png', { type: 'image/png' }))
     setDemoSample(true)
+    setConsentAccepted(false)
     setError('')
   }
 
   const reset = () => {
     scanId.current += 1
+    stopCamera()
     setFile(null)
     setDemoSample(false)
+    setConsentAccepted(false)
+    setFaceConsent(false)
+    setPortraitPreviewUrl('')
+    setSelfiePreviewUrl('')
+    setQrSafety(null)
+    setDigitalSignature(null)
     setError('')
     setProgress(0)
     setStageLabel('')
@@ -260,6 +466,10 @@ function ScreeningView({ navigate, onComplete, onToast, session }) {
       setError('Sign in before analyzing a real document. Guest mode is limited to the synthetic sample.')
       return
     }
+    if (session && !demoSample && !consentAccepted) {
+      setError('Confirm that you are authorized to upload this document and consent to private OCR processing.')
+      return
+    }
     if (session && cloudDocumentId) {
       setError('Delete the existing private upload before starting another cloud analysis.')
       return
@@ -276,27 +486,28 @@ function ScreeningView({ navigate, onComplete, onToast, session }) {
       const bytes = await file.arrayBuffer()
       const digest = await crypto.subtle.digest('SHA-256', bytes)
       const hash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
-      for (let index = 0; index < stages.length; index += 1) {
-        if (scanId.current !== id) return
-        setStageLabel(stages[index])
-        setProgress(Math.round(((index + 1) / stages.length) * 100))
-        await new Promise((resolve) => window.setTimeout(resolve, 220))
-      }
       if (scanId.current !== id) return
       if (session && !demoSample) {
-        setStageLabel('Uploading privately, running OCR and local review…')
+        setStageLabel('Requesting a private upload URL…')
+        setProgress(15)
         const intent = await apiRequest('/documents/upload-intents', {
           method: 'POST',
-          body: JSON.stringify({ name: file.name, size: file.size, mimeType: file.type, sha256: hash }),
+          body: JSON.stringify({ name: file.name, size: file.size, mimeType: file.type, sha256: hash, consentAccepted: true }),
         })
         setCloudDocumentId(intent.documentId)
+        setStageLabel('Uploading to private storage…')
+        setProgress(35)
         const { error: uploadError } = await supabase.storage
           .from(intent.bucket)
           .uploadToSignedUrl(intent.path, intent.token, file, { contentType: file.type, upsert: false })
         if (uploadError) throw uploadError
+        setStageLabel('Running configured OCR and image checks…')
+        setProgress(60)
         const analysis = await apiRequest(`/documents/${intent.documentId}/analyze`, { method: 'POST' })
         if (scanId.current !== id) return
+        setProgress(100)
         const screening = analysis.ocr.screening
+        setQrSafety(screening?.qrSafety || null)
         const localReview = analysis.localModelReview
         onComplete({
           name: analysis.document.name,
@@ -309,6 +520,7 @@ function ScreeningView({ navigate, onComplete, onToast, session }) {
           anomalies: 0,
           signals: [
             ['ocr.status', analysis.ocr.status, 'FastAPI + Tesseract'],
+            ...(Array.isArray(analysis.ocr.languages) ? [['ocr.languages', analysis.ocr.languages.join('+'), 'Configured Tesseract traineddata']] : []),
             ['ocr.word_count', String(analysis.ocr.wordCount ?? 0), 'Processed in memory'],
             ['forgery_model.status', analysis.model.status, 'No model configured'],
             ...(screening ? [
@@ -331,6 +543,8 @@ function ScreeningView({ navigate, onComplete, onToast, session }) {
           ],
           localModelReview: localReview,
           screening,
+          qrSafety: screening?.qrSafety || qrSafety || { status: 'not_checked', signatureVerification: 'unavailable' },
+          digitalSignature: digitalSignature || { status: 'not_verified', cryptographicVerification: 'unavailable' },
           duplicateCheck: analysis.duplicateCheck,
           ocrText: analysis.ocr.text,
           remote: true,
@@ -341,6 +555,8 @@ function ScreeningView({ navigate, onComplete, onToast, session }) {
         navigate('results')
         return
       }
+      setStageLabel('Generated an illustrative report from the synthetic sample; no OCR or forgery checks ran.')
+      setProgress(100)
       const seed = Number.parseInt(hash.slice(0, 8), 16)
       const report = {
         name: file.name,
@@ -351,6 +567,8 @@ function ScreeningView({ navigate, onComplete, onToast, session }) {
         confidence: `${72 + (seed % 25)}%`,
         anomalies: seed % 4,
         duplicateCheck: { status: 'unavailable' },
+        qrSafety: { status: 'not_checked', signatureVerification: 'unavailable' },
+        digitalSignature: { status: 'not_verified', cryptographicVerification: 'unavailable' },
         signals: [
           ['ela.residual.max', ((seed % 500) / 1000).toFixed(3), 'Synthetic sample'],
           ['font.weight.delta', `${(seed % 18) + 2}.${seed % 10}%`, 'Synthetic sample'],
@@ -383,11 +601,33 @@ function ScreeningView({ navigate, onComplete, onToast, session }) {
             <div className="drop-actions"><Button type="button" onClick={() => inputRef.current?.click()}><Icon name="file" size={16} /> Browse files</Button><Button type="button" onClick={useDemo}><Icon name="target" size={16} /> Use demo document</Button></div>
           </div>
           <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp,application/pdf" hidden onChange={(event) => { void selectFile(event.target.files?.[0]); event.target.value = '' }} />
+          <div className="camera-controls">
+            <div className="camera-controls-heading"><span className="feature-icon"><Icon name="camera" size={17} /></span><div><strong>Live document camera</strong><small>Capture a frame and continue through the existing review workflow.</small></div></div>
+            <div className="camera-actions">
+              <Button type="button" onClick={() => void openCamera('document')} disabled={busy}><Icon name="camera" size={15} />Open camera</Button>
+              {cameraStream && cameraMode === 'document' && <Button type="button" onClick={() => void captureCameraFrame()}><Icon name="scan" size={15} />Capture document</Button>}
+              {cameraStream && <Button type="button" onClick={stopCamera}><Icon name="close" size={15} />Stop camera</Button>}
+              <Button type="button" onClick={startVoiceScan} disabled={voiceScanning || busy}><Icon name="mic" size={15} />{voiceScanning ? 'Listening…' : 'Voice commands'}</Button>
+            </div>
+            {cameraStream && <div className="camera-preview"><video ref={videoRef} autoPlay muted playsInline aria-label={cameraMode === 'face' ? 'Front camera preview for local comparison' : 'Live document camera preview'} /><span>{cameraMode === 'face' ? 'FRONT CAMERA · TEMPORARY PREVIEW' : 'LIVE CAMERA · NOT UPLOADED UNTIL YOU RUN REVIEW'}</span></div>}
+            {cameraError && <p className="camera-message error" role="alert">{cameraError}</p>}
+            {voiceScanNotice && <p className="camera-message" role="status">{voiceScanNotice}</p>}
+            <p className="camera-disclosure">Camera access requires permission and HTTPS or localhost. Voice recognition is browser-provided; audio is not uploaded to IDShield, but the browser may process it externally.</p>
+          </div>
           {error && <div className="form-error" role="alert"><Icon name="alert" size={16} />{error}</div>}
           {cloudDocumentId && <div className="cloud-upload-cleanup"><p className="small-muted">A private cloud file was created for this analysis.</p><Button type="button" disabled={deletingUpload} onClick={deleteCloudUpload}><Icon name="close" size={15} />{deletingUpload ? 'Deleting…' : 'Delete private upload'}</Button></div>}
           {file && <FileChip file={file} onRemove={reset} />}
+          <Panel className="face-comparison-panel">
+            <div className="camera-controls-heading"><span className="feature-icon"><Icon name="eye" size={17} /></span><div><strong>Photo consistency · manual comparison</strong><small>Compare the document portrait and live photo side by side. No face recognition or automated identity match is performed.</small></div></div>
+            <label className="document-consent face-consent"><input type="checkbox" checked={faceConsent} onChange={(event) => { setFaceConsent(event.target.checked); setCameraError(''); if (!event.target.checked) { setPortraitPreviewUrl(''); setSelfiePreviewUrl(''); if (cameraMode === 'face') stopCamera() } }} /><span><strong>Consent to temporary local comparison.</strong> I am authorized to view these photos together. They are not uploaded by this comparison feature and are cleared when I leave this screen.</span></label>
+            <input ref={portraitInputRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => { void selectPortraitPhoto(event.target.files?.[0]); event.target.value = '' }} />
+            <div className="camera-actions face-actions"><Button type="button" onClick={() => portraitInputRef.current?.click()} disabled={!faceConsent}><Icon name="file" size={15} />Choose portrait image</Button><Button type="button" onClick={captureFacePhoto} disabled={!faceConsent}><Icon name="camera" size={15} />{cameraStream && cameraMode === 'face' ? 'Capture reference photo' : 'Open front camera'}</Button></div>
+            {(portraitPreviewUrl || selfiePreviewUrl) && <div className="face-comparison-grid">{[[portraitPreviewUrl, 'Document portrait image'], [selfiePreviewUrl, 'Live reference photo']].map(([preview, label]) => <div className="face-photo-slot" key={label}>{preview ? <img src={preview} alt={label} /> : <div className="face-photo-empty"><Icon name="user" size={24} /><span>{label} not selected</span></div>}<small>{label}</small></div>)}</div>}
+            <p className="camera-disclosure">This is a user-led visual aid only. IDShield does not detect faces, calculate similarity, establish identity, or make decisions.</p>
+          </Panel>
+          {session && file && !demoSample && <label className="document-consent"><input type="checkbox" checked={consentAccepted} onChange={(event) => { setConsentAccepted(event.target.checked); setError('') }} /><span><strong>Confirm authorized processing.</strong> I am authorized to submit this document and consent to private storage and OCR. Extracted text is shown only in this browser session; issuer verification is not performed.</span></label>}
           <div className="form-row"><label className="field-label" htmlFor="documentType">Document type</label><select className="select" id="documentType" value={docType} onChange={(event) => setDocType(event.target.value)}><option>Identity document</option><option>Aadhaar card</option><option>PAN card</option><option>Passport</option><option>Driving licence</option><option>Degree certificate</option><option>Other</option></select></div>
-          <div className="screen-actions"><Button variant="primary" disabled={!file || busy || (!session && !demoSample)} onClick={analyze}><Icon name="scan" />{busy ? 'Analyzing…' : demoSample ? 'Run synthetic demo' : 'Run document review'}</Button><Button onClick={reset}>Reset</Button></div>
+          <div className="screen-actions"><Button variant="primary" disabled={!file || busy || (!session && !demoSample) || (session && !demoSample && !consentAccepted)} onClick={analyze}><Icon name="scan" />{busy ? 'Analyzing…' : demoSample ? 'Run synthetic demo' : 'Run document review'}</Button><Button onClick={reset}>Reset</Button></div>
           {busy && <div className="progress-wrap" aria-live="polite"><div className="progress-label"><span>{stageLabel}</span><span>{progress}%</span></div><div className="progress-track"><div className="progress-fill" style={{ width: `${progress}%` }} /></div><p>{session && !demoSample ? 'Cloud analysis runs OCR only; a trained forgery model is not connected.' : 'The synthetic sample produces illustrative results only.'}</p></div>}
         </Panel>
         <div className="side-stack">
@@ -439,6 +679,17 @@ function ResultsView({ report, navigate, onToast, onDelete }) {
   const aiExplanationStatus = currentAiExplanation.status
   if (!report) return <div className="wrap section page-view"><Panel className="empty-state"><Icon name="file" size={28} /><h2>No report yet</h2><p>Run a screening to create a sample report.</p><Button variant="primary" onClick={() => navigate('screen')}>Open screening console</Button></Panel></div>
   const safetyReport = createSafetyReport(report)
+  const reportQrSafety = report.qrSafety || report.screening?.qrSafety || { status: 'not_checked' }
+  const qrStatusLabel = {
+    insecure_http: 'Insecure HTTP destination detected',
+    suspicious_scheme: 'Unsupported QR destination scheme',
+    unverified_url: 'HTTPS destination found · not verified',
+    decoded_unverified: 'QR detected/decoded · destination unverified',
+    unreadable: 'QR detected but unreadable',
+    not_found: 'No readable QR detected',
+    not_checked: 'QR check not performed',
+    unavailable: 'QR check unavailable',
+  }[reportQrSafety.status] || 'QR check unavailable'
   const exportedSafetyReport = aiExplanations
     ? {
       ...safetyReport,
@@ -460,6 +711,9 @@ function ResultsView({ report, navigate, onToast, onDelete }) {
       ...(report.localModelReview?.status ? [`Local vision review: ${report.localModelReview.status}`] : []),
       ...(report.localModelReview?.imageQuality ? [`Local image quality: ${report.localModelReview.imageQuality}`] : []),
       ...(report.localModelReview?.layoutObservation ? [`Local layout observation: ${report.localModelReview.layoutObservation}`] : []),
+      `QR check: ${qrStatusLabel}`,
+      'QR signature verification: unavailable; no trusted issuer key configured.',
+      `PDF signature structure: ${report.digitalSignature?.status === 'signature_present_unverified' ? 'signature marker detected; cryptographic verification unavailable' : report.digitalSignature?.status === 'not_detected' ? 'no signature marker detected; cryptographic verification unavailable' : report.digitalSignature?.status === 'not_applicable' ? 'not applicable to an image file' : 'not verified'}`,
       '',
       report.remote
         ? 'OCR text is intentionally not included in exported reports.'
@@ -502,11 +756,18 @@ function ResultsView({ report, navigate, onToast, onDelete }) {
     }
   }
   return <div className="wrap section page-view">
-    <div className="report-heading"><div><Eyebrow>{report.remote ? 'Private OCR + local vision review · human decision required' : 'Synthetic sample · illustrative results'}</Eyebrow><h2>{report.remote ? 'Document review report' : 'Sample report'}</h2><p className="small-muted">{report.name} · {new Date(report.analyzedAt).toLocaleString()}</p></div><div className="report-actions">{report.remote && <Button disabled={deleting} onClick={deleteReport}><Icon name="close" />{deleting ? 'Deleting…' : 'Delete private file'}</Button>}<Button onClick={exportReport}><Icon name="download" /> Export text</Button><Button onClick={() => downloadSafetyReportPdf(report, exportedSafetyReport)}><Icon name="download" /> Safety PDF</Button></div></div>
+    <div className="report-heading"><div><Eyebrow>{report.remote ? 'Private OCR + local vision review · human decision required' : 'Synthetic sample · illustrative results'}</Eyebrow><h2>{report.remote ? 'Document review report' : 'Sample report'}</h2><p className="small-muted">{report.name} · {new Date(report.analyzedAt).toLocaleString()}</p></div><div className="report-actions">{report.remote && <Button disabled={deleting} onClick={deleteReport}><Icon name="close" />{deleting ? 'Deleting…' : 'Delete private file'}</Button>}<Button onClick={() => navigate('assistant')}><Icon name="bot" /> Open assistant</Button><Button onClick={exportReport}><Icon name="download" /> Export text</Button><Button onClick={() => downloadSafetyReportPdf(report, exportedSafetyReport)}><Icon name="download" /> Safety PDF</Button></div></div>
     <div className="report-grid">
       <Panel className="report-preview-panel"><div className="document-preview">{report.previewUrl ? <img src={report.previewUrl} alt="Local uploaded document preview" /> : <div className="pdf-preview"><Icon name="file" size={40} /><strong>PDF document</strong><span>Preview unavailable in this prototype</span></div>}<span className="preview-label">LOCAL PREVIEW</span></div><div className="preview-meta"><span>{report.name}</span><span>{(report.size / 1024).toFixed(1)} KB</span></div><div className="disclosure-inline"><Icon name="lock" size={15} /> File preview remains in this browser session.</div></Panel>
       <Panel className="risk-panel"><div className="risk-gauge"><div className={`risk-circle ${report.remote ? '' : report.risk.toLowerCase()}`}><strong>{report.risk}</strong><span>{report.remote ? 'no classifier score' : 'synthetic risk band'}</span></div></div><div className="key-value"><span>Risk band</span><strong className={report.remote ? '' : `risk-text ${report.risk.toLowerCase()}`}>{report.remote ? 'Not scored · no classifier configured' : `${report.risk} · synthetic`}</strong></div><div className="key-value"><span>OCR confidence</span><strong>{report.confidence}</strong></div><div className="key-value"><span>{report.remote ? 'OCR words' : 'Synthetic signals'}</span><strong>{report.remote ? (report.signals[1]?.[1] ?? '0') : report.anomalies}</strong></div><div className="key-value"><span>Integrity digest</span><strong className="mono">{report.hash.slice(0, 12)}…</strong></div><div className="key-value"><span>Registry match</span><strong>Not connected</strong></div><div className="next-steps"><Eyebrow>Recommended next steps</Eyebrow><ul><li>Independently verify with the document issuer.</li><li>Review the original document in person.</li><li>Do not use this prototype as an authenticity decision.</li></ul></div></Panel>
     </div>
+    <Panel className="verification-methods-panel">
+      <div className="dashboard-panel-heading"><div><Eyebrow>QR &amp; digital signature checks</Eyebrow><h3>Verification status</h3></div><span className="tag amber">No issuer key configured</span></div>
+      <div className="verification-methods-grid">
+        <div><span className="verification-label"><Icon name="scan" size={15} /> QR destination scan</span><strong>{qrStatusLabel}</strong><small>Payloads are not displayed or opened. QR destination classification does not verify a document signature.</small></div>
+        <div><span className="verification-label"><Icon name="lock" size={15} /> Cryptographic signature</span><strong>{report.digitalSignature?.status === 'signature_present_unverified' ? 'PDF signature marker detected · not verified' : report.digitalSignature?.status === 'not_detected' ? 'No PDF signature marker detected' : report.digitalSignature?.status === 'not_applicable' ? 'Not applicable to image files' : 'Not verified'}</strong><small>{report.digitalSignature?.status === 'signature_present_unverified' ? 'A PDF marker is not proof of a valid signature. Signer, certificate chain, revocation, and signed-byte integrity have not been checked.' : report.digitalSignature?.status === 'not_applicable' ? 'Signature marker inspection is available only for PDFs. No cryptographic signature verification is configured.' : 'No authorized signature provider or trusted issuer certificate is configured. A QR code alone is not a digital signature.'}</small></div>
+      </div>
+    </Panel>
     <section className="safety-dashboard" aria-labelledby="safety-dashboard-title">
       <div className="safety-dashboard-heading"><div><Eyebrow>{report.remote ? 'AI-assisted safety & risk assessment' : 'Safety & risk assessment'}</Eyebrow><h2 id="safety-dashboard-title">Safety report</h2><p className="small-muted">Evidence-grounded triage. Unavailable checks are explicitly marked rather than treated as clear.</p></div><span className={`safety-status status-${safetyReport.status.toLowerCase().replaceAll(' ', '-')}`}>{safetyReport.status} · {safetyReport.riskLevel} risk</span></div>
       <Panel className={`safety-summary risk-${safetyReport.riskLevel.toLowerCase()}`}><div className="safety-summary-score"><span>Overall risk</span><strong>{safetyReport.riskLevel}</strong><small>{safetyReport.findings.length} assessment categories</small></div><div className="safety-summary-copy"><Eyebrow>{aiExplanations ? 'AI-generated explanation' : 'Automated explanation'}</Eyebrow><p>{aiExplanations?.['Safety Assessment'] || safetyReport.explanation}</p><small>{aiExplanationStatus === 'loading' ? 'Generating explanations locally from category statuses only; OCR text and the document are not sent to the model.' : aiExplanationStatus === 'unavailable' ? `Local AI explanation unavailable${currentAiExplanation.error ? `: ${currentAiExplanation.error}` : ''}. Showing the evidence-based fallback.` : aiExplanations ? 'Generated locally from category statuses only; no OCR text or document image was sent to the model.' : 'Rule-based explanation from available OCR and image signals; it is not an issuer verification or an automatic decision.'}</small></div><div className="safety-counts"><div><strong>{safetyReport.findings.slice(1).filter((item) => item.status === 'Suspicious' || item.status === 'High Risk').length}</strong><span>Review indicators</span></div><div><strong>{safetyReport.findings.slice(1).filter((item) => item.status === 'Unable to Verify').length}</strong><span>Unverified</span></div><div><strong>{safetyReport.findings.slice(1).filter((item) => item.status === 'Safe').length}</strong><span>Safe checks</span></div></div></Panel>
@@ -594,25 +855,134 @@ function AdminMembersPanel({ profile }) {
 
 function DashboardView({ navigate, profile }) {
   const isAdmin = profile?.role === 'institution_admin'
+  const [documents, setDocuments] = useState([])
+  const [totalDocuments, setTotalDocuments] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [refreshKey, setRefreshKey] = useState(0)
+  const userId = profile?.user?.id
+
+  const refreshHistory = () => {
+    setError('')
+    setLoading(true)
+    setRefreshKey((key) => key + 1)
+  }
+
+  useEffect(() => {
+    if (!userId || !supabase) return undefined
+
+    let active = true
+    supabase
+      .from('documents')
+      .select('id, mime_type, analysis_status, analysis_summary, created_at', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .limit(500)
+      .then(({ data, count, error: queryError }) => {
+        if (!active) return
+        if (queryError) throw queryError
+        setDocuments(data || [])
+        setTotalDocuments(count ?? data?.length ?? 0)
+      })
+      .catch((loadError) => {
+        if (!active) return
+        console.error('Unable to load document screening history.', loadError)
+        setError(loadError.message || 'Screening history is unavailable.')
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+
+    return () => { active = false }
+  }, [userId, refreshKey])
+
+  const analytics = summarizeDashboardRecords(documents)
+  const latestRecords = documents.slice(0, 8)
+  const maxMonthlyVolume = Math.max(...analytics.monthlyVolume.map(({ count }) => count), 1)
+
   return <div className="wrap section page-view">
-    <SectionHeading eyebrow="Account workspace" title={isAdmin ? 'Institution members' : 'Your account'}>{isAdmin ? 'Invite members and manage institution roles.' : 'Your account is ready for document screening. Institution administration is available only to provisioned administrators.'}</SectionHeading>
-    <Panel className="account-summary">
-      <Eyebrow>Signed-in account</Eyebrow>
-      <div className="key-value"><span>Email</span><strong>{profile?.user?.email || 'Loading account…'}</strong></div>
-      <div className="key-value"><span>Role</span><strong>{profile?.role?.replace('_', ' ') || 'Loading role…'}</strong></div>
-      <Button variant="primary" onClick={() => navigate('screen')}><Icon name="scan" /> New screening</Button>
+    <div className="dashboard-welcome">
+      <SectionHeading eyebrow={isAdmin ? 'Institution workspace' : 'Secure account workspace'} title="Security operations overview">
+        {isAdmin
+          ? 'Review institution-scoped screening activity and manage provisioned accounts.'
+          : 'Track your real document screening activity. Reports remain triage aids; human review is required.'}
+      </SectionHeading>
+      <div className="dashboard-actions">
+        <Button disabled={loading} onClick={refreshHistory}><Icon name="refresh" size={16} />{loading ? 'Refreshing…' : 'Refresh'}</Button>
+        <Button variant="primary" onClick={() => navigate('screen')}><Icon name="scan" /> New screening</Button>
+      </div>
+    </div>
+    <Panel className="dashboard-account-strip">
+      <span className="dashboard-avatar">{profile?.user?.email?.[0]?.toUpperCase() || 'U'}</span>
+      <div><Eyebrow>Signed in as</Eyebrow><strong>{profile?.user?.email || 'Loading account…'}</strong></div>
+      <span className="account-role">{profile?.role?.replace('_', ' ') || 'Loading role…'}</span>
+      <span className="dashboard-scope"><Icon name="lock" size={14} /> {isAdmin ? 'Institution-scoped access' : 'Private account records'}</span>
+    </Panel>
+    {error && <div className="dashboard-error" role="alert"><Icon name="alert" size={17} /><span>{error}</span><Button onClick={refreshHistory}>Retry</Button></div>}
+    <section className="dashboard-metrics" aria-label="Document screening statistics" aria-busy={loading}>
+      <Panel className="dashboard-metric"><span className="metric-icon"><Icon name="layers" /></span><span className="metric-label">Documents on record</span><strong>{loading || error ? '—' : totalDocuments.toLocaleString()}</strong><small>Visible under your account permissions</small></Panel>
+      <Panel className="dashboard-metric"><span className="metric-icon"><Icon name="check" /></span><span className="metric-label">Processed</span><strong>{loading || error ? '—' : analytics.completedCount.toLocaleString()}</strong><small>From up to 500 recent records</small></Panel>
+      <Panel className="dashboard-metric"><span className="metric-icon"><Icon name="clock" /></span><span className="metric-label">Awaiting analysis</span><strong>{loading || error ? '—' : analytics.pendingCount.toLocaleString()}</strong><small>Uploaded records not yet processed</small></Panel>
+      <Panel className={`dashboard-metric ${analytics.duplicateCount ? 'metric-attention' : ''}`}><span className="metric-icon"><Icon name="alert" /></span><span className="metric-label">Repeated-file signals</span><strong>{loading || error ? '—' : analytics.duplicateCount.toLocaleString()}</strong><small>Exact matches · not a fraud determination</small></Panel>
+    </section>
+    <section className="dashboard-analytics" aria-label="Screening analytics">
+      <Panel className="dashboard-activity-panel">
+        <div className="dashboard-panel-heading"><div><Eyebrow>Recent activity</Eyebrow><h3>Screening volume</h3></div><span className="tag cyan">6 months</span></div>
+        {loading
+          ? <div className="dashboard-loading" role="status"><span className="loading-spinner" /> Loading screening activity…</div>
+          : error
+            ? <div className="dashboard-chart-error">Activity is unavailable until the secure history can be loaded.</div>
+            : <div className="activity-chart" role="img" aria-label={`Monthly screening volume: ${analytics.monthlyVolume.map(({ label, count }) => `${label}: ${count}`).join(', ')}`}>
+            {analytics.monthlyVolume.map(({ key, label, count }) => <div className="activity-month" key={key} title={`${label}: ${count} ${count === 1 ? 'document' : 'documents'}`}>
+              <span className="activity-count">{count || ''}</span>
+              <div className="activity-bar-track"><span style={{ height: `${count ? Math.max(8, (count / maxMonthlyVolume) * 100) : 0}%` }} /></div>
+              <span className="activity-label">{label}</span>
+            </div>)}
+          </div>}
+        <p className="dashboard-chart-note">Based on up to 500 recent visible records. No risk or authenticity score is inferred.</p>
+      </Panel>
+      <Panel className="dashboard-alerts-panel">
+        <div className="dashboard-panel-heading"><div><Eyebrow>Signals requiring attention</Eyebrow><h3>Review queue</h3></div><span className={`alert-count ${analytics.alerts.length ? 'has-alerts' : ''}`}>{loading ? '—' : analytics.alerts.length}</span></div>
+        {loading
+          ? <div className="dashboard-loading" role="status"><span className="loading-spinner" /> Checking saved analysis signals…</div>
+          : error
+            ? <div className="dashboard-chart-error">Saved review signals could not be loaded.</div>
+            : analytics.alerts.length
+            ? <div className="dashboard-alert-list">{analytics.alerts.slice(0, 4).map(({ id, type, createdAt }) => <div className="dashboard-alert" key={id}><span className="alert-marker"><Icon name="alert" size={15} /></span><div><strong>{type === 'duplicate' ? 'Exact file match detected' : 'OCR requires attention'}</strong><small>{type === 'duplicate' ? 'Repeat-upload signal · not proof of fraud' : 'The configured OCR check was unavailable or unsupported'}</small><small>{formatDashboardDate(createdAt)}</small></div></div>)}</div>
+            : <div className="dashboard-clear-state"><span><Icon name="check" size={18} /></span><strong>No saved review signals</strong><p>Only configured checks are shown. This is not a finding that a document is authentic.</p></div>}
+      </Panel>
+    </section>
+    <Panel className="dashboard-history">
+      <div className="dashboard-panel-heading"><div><Eyebrow>Verification history</Eyebrow><h3>Recent document activity</h3></div><span className="small-muted">Showing up to 8 of {documents.length} loaded records</span></div>
+      {loading
+        ? <div className="dashboard-loading" role="status"><span className="loading-spinner" /> Loading secure history…</div>
+        : error
+          ? <div className="dashboard-empty-history">History could not be loaded. Retry to check the secure document service.</div>
+          : latestRecords.length
+            ? <div className="table-scroll"><table className="dashboard-history-table"><thead><tr><th>Document</th><th>Added</th><th>Processing</th><th>OCR status</th><th>Signals</th></tr></thead><tbody>{latestRecords.map((record) => {
+              const summary = record.analysis_summary || {}
+              const processing = record.analysis_status === 'complete' ? 'Processed' : 'Awaiting analysis'
+              const ocrStatus = summary.status === 'complete' ? 'OCR complete' : summary.status === 'unavailable' ? 'OCR unavailable' : summary.status === 'unsupported_file_type' ? 'OCR unsupported' : 'Not run'
+              const duplicate = summary.duplicateStatus === 'duplicate_found'
+              const fileType = record.mime_type === 'application/pdf' ? 'PDF document' : record.mime_type?.startsWith('image/') ? `${record.mime_type.slice(6).toUpperCase()} image` : 'Document'
+              return <tr key={record.id}><td><span className="history-file-icon"><Icon name="file" size={16} /></span><span>{fileType}</span></td><td>{formatDashboardDate(record.created_at)}</td><td><span className={`history-status ${record.analysis_status === 'complete' ? 'is-complete' : 'is-pending'}`}>{processing}</span></td><td>{ocrStatus}</td><td>{duplicate ? <span className="history-alert-tag">Exact repeat</span> : <span className="history-neutral-tag">No saved alert</span>}</td></tr>
+            })}</tbody></table></div>
+            : <div className="dashboard-empty-history"><Icon name="layers" size={22} /><strong>No document history yet</strong><p>Start a screening to see real, account-scoped activity here.</p><Button variant="primary" onClick={() => navigate('screen')}>Start a screening</Button></div>}
+      <p className="dashboard-privacy-note"><Icon name="lock" size={14} /> This view loads document metadata only. OCR text, identifier values, and document images are not requested.</p>
     </Panel>
     {isAdmin && <AdminMembersPanel profile={profile} />}
   </div>
 }
 
-const quickQuestions = ['Why was my document flagged?', 'What is SHA-256 used for?', 'How accurate is the model?', 'Is my document stored?', 'Explain error-level analysis']
+const quickQuestions = ['Why was my document flagged?', 'What is SHA-256 used for?', 'How accurate is the model?', 'Is my document stored?', 'Explain QR and signature checks', 'How does voice scanning work?', 'Explain photo consistency']
 function assistantAnswer(question) {
   const text = question.toLowerCase()
   if (text.includes('sha') || text.includes('hash') || text.includes('fingerprint')) return 'SHA-256 creates a fixed-length digest from the exact file bytes. Matching digests indicate byte-identical files; a digest does not prove that the original document is genuine.'
-  if (text.includes('stored') || text.includes('privacy') || text.includes('upload')) return 'This frontend prototype reads the selected file locally to validate its signature and calculate a SHA-256 digest. It does not upload the file. The report signals are synthetic, and you should still avoid using sensitive real documents in a demo.'
+  if (text.includes('qr') || text.includes('signature')) return 'IDShield can classify a readable QR destination without displaying or opening its payload. A PDF signature marker may be noted, but cryptographic verification, signer trust, certificate validity, and issuer checks are not configured. QR decoding is not signature verification.'
+  if (text.includes('voice') || text.includes('speech') || text.includes('microphone')) return 'Voice scanning uses browser-provided speech recognition for explicit camera commands only. Audio is not uploaded to IDShield, but the browser may process it externally. This is not voice biometrics or identity verification.'
+  if (text.includes('face') || text.includes('photo') || text.includes('portrait')) return 'Photo consistency is a consent-gated, local side-by-side visual aid. IDShield does not detect faces, calculate similarity, perform automated face matching, or establish identity.'
+  if (text.includes('stored') || text.includes('privacy') || text.includes('upload')) return 'Guest mode only analyzes the fictional sample. Signed-in document review uploads the file to private storage after your consent; extracted OCR text remains in the current page session and is excluded from reports. You can delete the private upload from its report. Browser speech recognition may process voice commands externally.'
   if (text.includes('accurate') || text.includes('confidence') || text.includes('model')) return 'There is no live trained classifier in this prototype, so its synthetic confidence values are not an accuracy measure. Real deployment would require independent evaluation and issuer verification.'
-  if (text.includes('error-level') || text.includes('ela') || text.includes('compression')) return 'Error-level analysis compares image compression residuals and can suggest regions worth examining. Scanner noise, recompression, and editing can all affect those residuals, so ELA alone cannot prove tampering. ELA is not actually run in this prototype.'
+  if (text.includes('error-level') || text.includes('ela') || text.includes('compression')) return 'The configured image check recompresses an image and returns a global difference heuristic. It does not produce localized regions, and scanner noise, recompression, and editing can all affect the result. It cannot prove tampering.'
   if (text.includes('flag') || text.includes('risk') || text.includes('anomal')) return 'The report signals in this demo are deterministic synthetic examples derived from the file hash. They are not the result of live OCR or image forensics. Treat any signal as a prompt for independent human review, never as proof or an automatic rejection.'
   return 'I can explain the prototype’s workflow, SHA-256 integrity fingerprints, synthetic risk signals, and privacy limits. I cannot verify a document or query an issuer registry.'
 }
@@ -676,14 +1046,14 @@ function AssistantView({ onToast, session }) {
 
 function ResearchView() {
   const notes = [
-    ['SIGNAL 01', 'Error-level analysis (ELA)', 'Re-saves an image at a known JPEG quality and compares residual energy. ELA may indicate areas to inspect; recompression, scanner noise, and edits can look similar. It is not proof of manipulation.'],
-    ['SIGNAL 02', 'Copy-move detection', 'Looks for similar image patches that may warrant review. Repeated patterns can also be legitimate document design elements.'],
-    ['SIGNAL 03', 'Typography & baseline audit', 'Compares local stroke weight and layout with a reference template. Without a trusted issuer template, differences are weak indicators.'],
+    ['CONFIGURED HEURISTIC', 'Image recompression signal', 'Re-saves an image at a known JPEG quality and returns a global difference heuristic. The current service does not produce localized regions; recompression and scanner noise can look similar.'],
+    ['NOT CONFIGURED', 'Copy-move detection', 'No copy-move detector is connected. Repeated patterns are not currently analyzed as a forgery signal.'],
+    ['NOT CONFIGURED', 'Typography & baseline audit', 'No trusted issuer template or typography comparator is connected, so font and baseline differences are not assessed.'],
     ['SIGNAL 04', 'Cryptographic integrity', 'SHA-256 identifies exact byte-level file equality. It cannot determine whether the first copy was genuine.'],
-    ['SIGNAL 05', 'Cross-document consistency', 'Normalised fields can be compared across documents. OCR errors and name transliteration require human interpretation.'],
-    ['LIMITS', 'What this prototype does not do', 'OCR runs only when the separately configured FastAPI/Tesseract service is available. No trained forgery model, liveness check, face match, or issuer-registry lookup is connected.'],
+    ['NOT CONFIGURED', 'Cross-document consistency', 'The current workflow analyzes one document at a time and does not compare extracted fields across documents.'],
+    ['LIMITS', 'What this prototype does not do', 'OCR runs only when the separately configured FastAPI/Tesseract service is available. No trained forgery model, localized region detector, liveness check, face match, or issuer-registry lookup is connected.'],
   ]
-  return <div className="wrap section page-view"><SectionHeading eyebrow="Research notes" title="How forensic signals should be interpreted">A technical companion to the prototype: what signals can suggest, what they cannot prove, and where this demo stops.</SectionHeading><div className="research-grid">{notes.map(([tag, title, description]) => <Panel key={title}><span className={`tag ${tag === 'LIMITS' ? 'amber' : 'cyan'}`}>{tag}</span><h3>{title}</h3><p className="panel-copy">{description}</p></Panel>)}</div><Panel className="stack-panel"><Eyebrow>Application stack</Eyebrow><div className="chips"><span className="tag">React + Vite</span><span className="tag">Tailwind CSS</span><span className="tag">Framer Motion</span><span className="tag">Node + Express API</span><span className="tag">Supabase Auth + private Storage</span><span className="tag">Python FastAPI + OpenCV + Tesseract</span><span className="tag">Forgery model not configured</span></div></Panel></div>
+  return <div className="wrap section page-view"><SectionHeading eyebrow="Research notes" title="How forensic signals should be interpreted">A technical companion to the prototype: what signals can suggest, what they cannot prove, and where this demo stops.</SectionHeading><div className="research-grid">{notes.map(([tag, title, description]) => <Panel key={title}><span className={`tag ${tag === 'LIMITS' || tag === 'NOT CONFIGURED' ? 'amber' : 'cyan'}`}>{tag}</span><h3>{title}</h3><p className="panel-copy">{description}</p></Panel>)}</div><Panel className="stack-panel"><Eyebrow>Application stack</Eyebrow><div className="chips"><span className="tag">React + Vite</span><span className="tag">Tailwind CSS</span><span className="tag">Framer Motion</span><span className="tag">Node + Express API</span><span className="tag">Supabase Auth + private Storage</span><span className="tag">Python FastAPI + OpenCV + Tesseract</span><span className="tag">Forgery model not configured</span></div></Panel></div>
 }
 
 function AboutView() {
@@ -935,7 +1305,7 @@ function App() {
     return () => controller.abort()
   }, [session])
 
-  const allowedViews = new Set(['home', 'screen', 'results', 'dashboard', 'auth', 'complete-profile'])
+  const allowedViews = new Set(['home', 'screen', 'results', 'dashboard', 'transit', 'assistant', 'research', 'about', 'contact', 'auth', 'complete-profile'])
   const requestedView = allowedViews.has(view) ? view : 'home'
   const routeView = session && profile && !profile.phone
     ? 'complete-profile'
@@ -966,6 +1336,11 @@ function App() {
     screen: <ScreeningView navigate={navigate} onComplete={setReport} onToast={notify} session={session} />,
     results: <ResultsView report={report} navigate={navigate} onToast={notify} onDelete={() => setReport(null)} />,
     dashboard: <DashboardView navigate={navigate} profile={profile} />,
+    transit: <TransitView navigate={navigate} session={session} />,
+    assistant: <AssistantView onToast={notify} session={session} />,
+    research: <ResearchView />,
+    about: <AboutView />,
+    contact: <ContactView onToast={notify} />,
     auth: <AuthView navigate={navigate} onToast={notify} />,
     'complete-profile': <CompleteProfileView onComplete={(phone) => {
       setProfile((currentProfile) => currentProfile ? { ...currentProfile, phone } : currentProfile)
@@ -975,6 +1350,13 @@ function App() {
   }
 
   const signOut = async () => {
+    if (!supabase) {
+      setSession(null)
+      setProfile(null)
+      navigate('home')
+      notify('No secure session is connected.')
+      return
+    }
     let error
     try {
       ({ error } = await supabase.auth.signOut())
@@ -991,7 +1373,7 @@ function App() {
   }
 
   const currentPage = routeView === 'results' ? 'screen' : routeView
-  const currentPageLabel = navItems.find(([key]) => key === currentPage)?.[1] || 'Account'
+  const currentPageLabel = [...navItems, ...informationNavItems].find(([key]) => key === currentPage)?.[1] || 'Account'
   const toggleSidebar = () => {
     if (window.matchMedia('(max-width: 860px)').matches) {
       setMobileMenu((open) => !open)
@@ -1029,6 +1411,13 @@ function App() {
               <Icon name={icon} size={18} /><span>{label}</span>
             </button>
           })}
+          <span className="sidebar-group-label sidebar-secondary-label">INFORMATION</span>
+          {informationNavItems.map(([key, label, icon]) => {
+            const active = currentPage === key
+            return <button type="button" key={key} className={`sidebar-link ${active ? 'active' : ''}`} title={sidebarCollapsed ? label : undefined} aria-current={active ? 'page' : undefined} onClick={() => navigate(key)}>
+              <Icon name={icon} size={18} /><span>{label}</span>
+            </button>
+          })}
         </nav>
         <div className="sidebar-bottom">
           <button className="sidebar-quick-action" type="button" onClick={() => navigate('screen')}><Icon name="plus" size={16} /><span>Start a new screening</span></button>
@@ -1045,7 +1434,7 @@ function App() {
       </aside>
       <div className="workspace-content">
         <main id="main-content">{routes[routeView] || routes.home}</main>
-        <footer className="site-footer"><div className="wrap"><div className="footer-grid"><div className="footer-about"><Brand onClick={() => navigate('home')} /><p>Identity document screening with evidence and clear limitations.</p></div><div><h4>Screening</h4><button onClick={() => navigate('screen')}>Start a screening</button><button onClick={() => navigate('dashboard')}>Account</button><button onClick={() => navigate('auth')}>{session ? 'Account sign-in' : 'Sign in'}</button></div><div><h4>Important</h4><p>Reports are triage aids only. Verify documents with the authorized issuer.</p></div></div><div className="footer-bottom"><span>© 2026 IDShield AI</span><span>Automated screening · human review required</span></div></div></footer>
+        <footer className="site-footer"><div className="wrap"><div className="footer-grid"><div className="footer-about"><Brand onClick={() => navigate('home')} /><p>Identity document screening with evidence and clear limitations.</p></div><div><h4>Screening</h4><button onClick={() => navigate('screen')}>Start a screening</button><button onClick={() => navigate('dashboard')}>Account</button><button onClick={() => navigate('assistant')}>AI assistant</button><button onClick={() => navigate('auth')}>{session ? 'Account sign-in' : 'Sign in'}</button></div><div><h4>Learn</h4><button onClick={() => navigate('research')}>Research notes</button><button onClick={() => navigate('about')}>About IDShield</button><button onClick={() => navigate('contact')}>Contact</button></div><div><h4>Important</h4><p>Reports are triage aids only. Verify documents with the authorized issuer.</p></div></div><div className="footer-bottom"><span>© 2026 IDShield AI</span><span>Automated screening · human review required</span></div></div></footer>
       </div>
     </div>
     {toast && <div className="toast" role="status"><Icon name="check" size={17} />{toast}</div>}

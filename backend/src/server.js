@@ -1,13 +1,16 @@
 import 'dotenv/config'
 import { createServer } from './serverApp.js'
 
-const missing = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']
+const missing = ['SUPABASE_URL']
   .filter((name) => !process.env[name])
-const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+const serviceRoleKey = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+if (!serviceRoleKey) {
+  missing.push('SUPABASE_SECRET_KEY (or SUPABASE_SERVICE_ROLE_KEY)')
+}
 if (serviceRoleKey &&
   (serviceRoleKey.startsWith('sb_publishable_') ||
    serviceRoleKey.includes('replace-with'))) {
-  missing.push('SUPABASE_SERVICE_ROLE_KEY (server-only key required, not a publishable key)')
+  missing.push('SUPABASE_SECRET_KEY (server-only key required, not a publishable key)')
 }
 if (!process.env.FASTAPI_AUTH_TOKEN && !process.env.INFERENCE_API_TOKEN) {
   missing.push('FASTAPI_AUTH_TOKEN (or INFERENCE_API_TOKEN)')
