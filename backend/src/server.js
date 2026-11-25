@@ -1,5 +1,8 @@
-import 'dotenv/config'
+import dotenv from 'dotenv'
+import { fileURLToPath } from 'node:url'
 import { createServer } from './serverApp.js'
+
+dotenv.config({ path: fileURLToPath(new URL('../.env', import.meta.url)) })
 
 const missing = ['SUPABASE_URL']
   .filter((name) => !process.env[name])
